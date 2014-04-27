@@ -1,0 +1,5 @@
+package iOSNotifications;
+
+public class Notification {
+
+}

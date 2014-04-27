@@ -1,0 +1,5 @@
+<resources>
+
+    <string name="app_name">iOSNotifications</string>
+	<string name="glass_voice_trigger">receive notifications</string>
+</resources>

@@ -1,0 +1,695 @@
+package iosnotifications;
+
+import java.io.UnsupportedEncodingException;
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.Hashtable;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.UUID;
+
+import com.google.android.glass.app.Card;
+import com.google.android.glass.media.Sounds;
+import com.google.android.glass.timeline.LiveCard;
+import com.google.android.glass.timeline.LiveCard.PublishMode;
+import com.vantagetechnic.iosnotifications.R;
+
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothAdapter.LeScanCallback;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattServer;
+import android.bluetooth.BluetoothGattServerCallback;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.BluetoothProfile;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.SharedPreferences.Editor;
+import android.media.AudioManager;
+import android.os.Handler;
+import android.os.IBinder;
+import android.support.v4.app.NotificationCompat;
+import android.util.Log;
+import android.widget.RemoteViews;
+
+public class NotificationsService extends Service {
+
+	private static final String TAG = "iOSNotifications";
+	
+	private Context overallContext;
+	
+	private BluetoothManager mBluetoothManager;
+    private BluetoothAdapter mBluetoothAdapter;
+    private BluetoothGatt mBluetoothGatt;
+    private int mConnectionState = STATE_DISCONNECTED;
+    
+    private final Handler mHandler = new Handler();
+    
+    private static final UUID CONFIG_DESCRIPTOR = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
+    
+    private static final byte EventIDNotificationAdded = 0;
+    private static final byte EventIDNotificationRemoved = 2;
+    
+    private static final byte CategoryIDOther = 0;
+    private static final byte CategoryIDIncomingCall = 1;
+    private static final byte CategoryIDMissedCall = 2;
+    private static final byte CategoryIDVoicemail = 3;
+    private static final byte CategoryIDSocial = 4;
+    private static final byte CategoryIDSchedule = 5;
+    private static final byte CategoryIDEmail = 6;
+    private static final byte CategoryIDNews = 7;
+    private static final byte CategoryIDHealthAndFitness = 8;
+    private static final byte CategoryIDBusinessAndFinance = 9;
+    private static final byte CategoryIDLocation = 10;
+    private static final byte CategoryIDEntertainment = 11;
+    
+    private static final byte NotificationAttributeIDAppIdentifier = 0;
+    private static final byte NotificationAttributeIDTitle = 1; //(Needs to be followed by a 2-bytes max length parameter)
+    private static final byte NotificationAttributeIDSubtitle = 2; //(Needs to be followed by a 2-bytes max length parameter)
+    private static final byte NotificationAttributeIDMessage = 3; //(Needs to be followed by a 2-bytes max length parameter)
+    private static final byte NotificationAttributeIDMessageSize = 4;
+    private static final byte NotificationAttributeIDDate = 5;
+    
+    private static final int STATE_DISCONNECTED = 0;
+    private static final int STATE_CONNECTING = 1;
+    private static final int STATE_CONNECTED = 2;
+
+    private static ArrayList<Notification> notifs = new ArrayList<Notification>();
+    private static ArrayList<BluetoothDevice> invalidDevices = new ArrayList<BluetoothDevice>();
+    
+    private ArrayList<byte[]> receivedBytes;
+    
+    private static final Hashtable<String,LiveCard> currentNotifications = new Hashtable<String,LiveCard>(); 
+    
+    private BluetoothGattServer mServer;
+    
+    private SharedPreferences preferences;
+    
+    /*private final BluetoothGattServerCallback mServerCallback = new BluetoothGattServerCallback() {
+    	@Override
+    	public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
+    		if(newState == BluetoothGatt.STATE_CONNECTED) {
+    			device.connectGatt(overallContext, true, mGattCallback);
+    		}
+    		else {
+    		
+    		}
+    	}
+    };*/
+    
+    private final LeScanCallback mLeScan = new LeScanCallback() {
+		@Override
+		public void onLeScan(BluetoothDevice device, int rssi,
+				byte[] scanRecord) {
+			// TODO Auto-generated method stub
+			
+			if(device != null) {
+				if(invalidDevices.contains(device) == false) {
+					Log.d(TAG, "Found LE Device");
+						//device.setPairingConfirmation(false);
+						//device.createBond();
+					Editor edit = preferences.edit();
+			        edit.putString("Status", "Pairing...");
+			        edit.commit();
+			        
+					BluetoothGatt gatt = device.connectGatt(overallContext, false, mGattCallback);
+					gatt.connect();
+					mBluetoothAdapter.stopLeScan(mLeScan);
+				}
+			}
+		}
+	};
+    
+    private final  BluetoothGattCallback mGattCallback =
+            new BluetoothGattCallback() {
+        @Override
+        public void onConnectionStateChange(BluetoothGatt gatt, int status,
+                int newState) {
+        	
+        	Log.d(TAG, "Connection Changed: Status: " + status + " State: " + newState);
+        	
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                mConnectionState = STATE_CONNECTED;
+                Log.d(TAG, "Connected to GATT server.");
+                Log.d(TAG, "Attempting to start service discovery:" +
+                        gatt.discoverServices());
+                
+                Editor edit = preferences.edit();
+                edit.putString("Status", "Connected");
+                edit.commit();
+
+            } else if (newState != BluetoothProfile.STATE_CONNECTING) {
+                mConnectionState = STATE_DISCONNECTED;
+                Log.d(TAG, "Connection to GATT server lost!");
+                Editor edit = preferences.edit();
+                edit.putString("Status", "Disconnected");
+                edit.commit();
+            }
+        }
+        
+        @Override
+        public void onDescriptorWrite(BluetoothGatt gatt, BluetoothGattDescriptor desciptor, int status) {
+        	Log.d(TAG, "Desciptor write status: " + status);
+        }
+        
+        @Override
+        // New services discovered
+        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
+        	Log.d(TAG, "Gatt Discovered: " + status);
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+            	Log.d(TAG, "Gatt connected!");
+               try {
+	            	if(gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0")) != null) {
+						Log.d(TAG, "Is iPhone Service!"); 
+	            		notifs.clear();
+						 
+						 final BluetoothGatt gatt2 = gatt;
+						 
+						 final BluetoothGattService service = gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));
+	            	   
+	            	   if(mConnectionState == STATE_CONNECTED) {
+	            		   
+	            		   BluetoothGattCharacteristic notifChar = service.getCharacteristic(UUID.fromString("9FBF120D-6301-42D9-8C58-25E699A21DBD"));
+	            		   if(notifChar != null) {
+	            			   gatt.setCharacteristicNotification(notifChar, true);
+	            			   BluetoothGattDescriptor notifDesc = notifChar.getDescriptor(CONFIG_DESCRIPTOR);
+		                       notifDesc.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+		                       gatt.writeDescriptor(notifDesc);
+		                       
+	            		   }
+	            		   
+	            		   mHandler.postDelayed(new Runnable() {
+
+							@Override
+							public void run() {
+								// TODO Auto-generated method stub
+								 BluetoothGattCharacteristic dataChar = service.getCharacteristic(UUID.fromString("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"));
+			            		   //BluetoothGattCharacteristic dataChar = new BluetoothGattCharacteristic(UUID.fromString("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"), BluetoothGattCharacteristic.PROPERTY_NOTIFY, BluetoothGattCharacteristic.PERMISSION_READ_ENCRYPTED);
+			            		   if(dataChar != null) {
+			            			   //dataChar.setWriteType(BluetoothGattCharacteristic.WRITE_TYPE_SIGNED);
+			            			   gatt2.setCharacteristicNotification(dataChar, true);
+			            			   BluetoothGattDescriptor dataDesc = dataChar.getDescriptor(CONFIG_DESCRIPTOR);
+				                       dataDesc.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+				                       gatt2.writeDescriptor(dataDesc);
+			            		   }
+							}
+	            			   
+	            		   }, 3000);
+	            		   
+	            		  
+	            	   }
+	               }
+	               else {
+	            	   Log.d(TAG, "Is not an iPhone Service, Disconnecting...");
+	            	   invalidDevices.add(gatt.getDevice());
+	            	   gatt.disconnect();
+	            	   startScan();
+	               }
+               } catch (Exception e) {
+            	   e.printStackTrace();
+               }
+            } else {
+                Log.d(TAG, "onServicesDiscovered received: " + status);
+            }
+        }
+        
+        @Override
+        public void onCharacteristicWrite(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic, int status) {
+        	//Log.d(TAG,  "Write Status: " + status);
+        	 
+			/*BluetoothGattService service = gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));
+   	   
+        	BluetoothGattCharacteristic dataChar = service.getCharacteristic(UUID.fromString("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"));
+        
+        	if(dataChar != null) {
+        		if(gatt.readCharacteristic(dataChar)) {
+        			Log.d(TAG, "Read started!");
+        		}
+        		else {
+        			Log.d(TAG, "Failed to start read!");
+        		}
+        	}*/
+        }
+        
+        @Override
+        public void onCharacteristicChanged(BluetoothGatt gatt, BluetoothGattCharacteristic characteristic) {
+        	try {
+        		Log.d(TAG, "A characteristic changed and we need to check and see which one!");
+	        	if(characteristic.getUuid().equals(UUID.fromString("9FBF120D-6301-42D9-8C58-25E699A21DBD"))) {
+	        		Log.d(TAG, "A notification update was received!");
+	        		//It is a notif characteristic
+	        		
+	        		//According to Apple
+	        		//The first byte of its value is the "EventID"
+	        		//The second byte of its value is the "EventFlags"
+	        		//The third byte of its value is the "CategoryID"
+	        		//the fourth byte of its value is the "CategoryCount"
+	        		//the rest of the bytes is the notifications ID
+	        		
+	        		byte[] value = characteristic.getValue();
+	        		
+	        		//If not malformed
+	        		if(value.length > 4) {
+	        			//We only care about the first, third, and the notifcation id byte range
+	        			byte eventId = value[0];
+	        			byte categoryId = value[2];
+	        			
+	        			byte[] notifId = new byte[value.length - 4];
+	        			
+	        			//Copy the notification ID!
+	        			int offset = 0;
+	        			for(int i = 4; i < value.length; i++) {
+	        				notifId[offset] = value[i];
+	        				offset++;
+	        			}
+	        			
+	        			//We have a new notification!
+	        			if(eventId == EventIDNotificationAdded) {
+	        				Log.d(TAG, "A notification was added!");
+		        			
+		        			Notification notif = new Notification();
+		        			notif.categoryId = categoryId;
+		        			notif.notificationId = notifId;
+		        			notif.realID = ByteBuffer.wrap(notifId).getInt();
+		        			notifs.add(notif);
+		        			
+		        			Log.d(TAG, "Notification ID: " + notif.realID);
+		        			
+		        			BluetoothGattService service = gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));   
+		        			//So, lets get the content of the notification and then post it to timeline!
+		        			BluetoothGattCharacteristic controlChar = service.getCharacteristic(UUID.fromString("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9"));
+	        			
+		        			if(controlChar != null) {
+			        			//Build request
+			        	
+		        				receivedBytes = new ArrayList<byte[]>();
+		        				
+			        			ByteBuffer request = ByteBuffer.allocate(8 + notifId.length);
+			        			request.put((byte) 0);
+			        			request.put(notifId);
+			        			request.put(NotificationAttributeIDTitle);
+			        			request.put((byte) 255);
+			        			request.put((byte) 255);
+			        			request.put(NotificationAttributeIDMessage);
+			        			request.put((byte) 255);
+			        			request.put((byte) 255);
+			        			request.put(NotificationAttributeIDDate);
+			        			
+			        			controlChar.setValue(request.array());
+			        			
+			        			if(mConnectionState == STATE_CONNECTED) {
+			        				if(gatt.writeCharacteristic(controlChar)) {
+			        					Log.d(TAG, "Gatt wrote successfully!");
+			        				}
+			        			}
+		        			}
+	        			}
+	        			else if(eventId == EventIDNotificationRemoved) {
+	        				int notifRealId = ByteBuffer.wrap(notifId).getInt();
+	        				
+	        				String sId = "" + notifRealId;
+	        				
+	        				if(currentNotifications.containsKey(sId)) {
+	        					LiveCard card = currentNotifications.get(sId);
+	        					
+	        					card.unpublish();
+	        					
+	        					currentNotifications.remove(sId);
+	        				}
+	        			}
+	        		}
+	        		
+	        	}
+	        	else if(characteristic.getUuid().equals(UUID.fromString("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"))) {
+	        		//We have received a response from a write!
+	        		Log.d(TAG, "We received a data response for a notification!");
+	        		//processResponse(characteristic);
+	        		Log.d(TAG, "Bytes Received: " + characteristic.getValue().length);
+	        		receivedBytes.add(characteristic.getValue());
+	        		
+	        		if(hasAllTuples(receivedBytes)) {
+	        			Log.d(TAG, "Notification Response has all data!");
+	        			processResponse(receivedBytes);
+	        		}
+	        	}
+        	} catch (Exception overall) {
+        		overall.printStackTrace();
+        	}
+        }
+    };
+    
+    private boolean hasAllTuples(ArrayList<byte[]> bytes) {
+    	try {
+	    	int totalLengthOfBytes = 0;
+			
+			for(int i = 0; i < bytes.size(); i++) {
+				totalLengthOfBytes += bytes.get(i).length;
+			}
+			
+			int byteOffset = 0;
+			
+			byte[] value = new byte[totalLengthOfBytes];
+			
+			for(int i = 0; i < bytes.size(); i++) {
+				byte[] item = bytes.get(i);
+				
+				for(int x = 0; x < item.length; x++) {
+					value[byteOffset] = item[x];
+					byteOffset++;
+				}
+			}
+			
+			if(value.length > 4) {
+				//We have a valid response of bytes so now lets find out if all the tuples are there!
+				int offset = 5;
+				offset++;
+				int attr1Length = value[offset];
+				Log.d(TAG, "Attr1: " + attr1Length);
+				offset ++;
+				if(value[offset] > 0)
+					attr1Length += value[offset];
+				offset += attr1Length;
+				offset += 2;
+				int attr2Length = value[offset];
+				Log.d(TAG, "Attr2: " + attr2Length);
+				offset ++;
+				if(value[offset] > 0)
+					attr2Length += value[offset];
+				offset += attr2Length;
+				offset += 2;
+				int attr3Length = value[offset];
+				offset ++;
+				if(value[offset] > 0)
+					attr3Length += value[offset];
+				offset += attr3Length;
+
+				Log.d(TAG, "Attr3: " + attr3Length);
+				Log.d(TAG, "Final Offset: " + offset);
+				
+				if(value.length < offset) {
+					return false;
+				}
+				
+				Log.d(TAG, "Passed Tuple Check");
+				
+				return true;
+			}
+			
+			return false;
+    	} catch (Exception e) {
+    		//e.printStackTrace();
+    		return false;
+    	}
+    }
+    
+    private void processResponse(ArrayList<byte[]> bytes) {
+    	//We have received a response from a write!
+		//Log.d(TAG, "We received a data response for a notification!");
+		try {
+			int totalLengthOfBytes = 0;
+			
+			for(int i = 0; i < bytes.size(); i++) {
+				totalLengthOfBytes += bytes.get(i).length;
+			}
+			
+			int byteOffset = 0;
+			
+			byte[] value = new byte[totalLengthOfBytes];
+			
+			for(int i = 0; i < bytes.size(); i++) {
+				byte[] item = bytes.get(i);
+				
+				for(int x = 0; x < item.length; x++) {
+					value[byteOffset] = item[x];
+					byteOffset++;
+				}
+			}
+			
+			Notification foundNotif = null;
+			
+			for(int i = 0; i < notifs.size(); i++) {
+				Notification notif = notifs.get(i);
+				
+				if(isNotificationId(value, notif.realID)) {
+					foundNotif = notif;
+					break;
+				}
+			}
+			
+			if(foundNotif != null) {
+				notifs.remove(foundNotif);
+				//We only requested 3 attributes when we sent our request
+				//Title
+				//Message
+				//Date
+				
+				String message = "";
+				String title = "";
+				String date = "";
+				
+				int offset = 5;
+				offset++;
+				int attr1Length = value[offset];
+				Log.d(TAG, "Attr1: " + attr1Length);
+				offset ++;
+				if(value[offset] > 0)
+					attr1Length += value[offset];
+				offset += attr1Length;
+				offset += 2;
+				int attr2Length = value[offset];
+				Log.d(TAG, "Attr2: " + attr2Length);
+				offset ++;
+				if(value[offset] > 0)
+					attr2Length += value[offset];
+				offset += attr2Length;
+				offset += 2;
+				int attr3Length = value[offset];
+				offset ++;
+				if(value[offset] > 0)
+					attr3Length += value[offset];
+				offset += attr3Length;
+
+				Log.d(TAG, "Attr3: " + attr3Length);
+				Log.d(TAG, "Final Offset: " + offset);
+				
+				Log.d(TAG, "Full Data Hex: " + new BigInteger(1, value).toString(16));
+				
+				offset = 5;
+				offset += 3;
+				
+				byte[] attr1 = readBuffer(value, offset, attr1Length);
+				offset += attr1Length;
+				offset += 3;
+				
+				Log.d(TAG, "Attribute1 Data Hex: " + (new BigInteger(1, attr1)).toString(16));
+				
+				byte[] attr2 = readBuffer(value, offset, attr2Length);
+				offset += attr2Length;
+				offset += 3;
+				
+				Log.d(TAG, "Attribute2 Data Hex: " + (new BigInteger(1, attr2)).toString(16));
+				
+				byte[] attr3 = readBuffer(value, offset, attr3Length);
+				
+				Log.d(TAG, "Attribute3 Data Hex: " + (new BigInteger(1, attr3)).toString(16));
+				
+				try {
+						title = new String(attr1, "UTF-8");
+						Log.d(TAG, "Title: " + title);
+					} catch (UnsupportedEncodingException e) {
+						
+					}
+				try {
+						message = new String(attr2, "UTF-8");
+						Log.d(TAG, "Message: " + message);
+					} catch (UnsupportedEncodingException e) {
+						
+					}
+				try {
+						date = new String(attr3, "UTF-8");
+						Log.d(TAG, "Date: " + date);
+					} catch (UnsupportedEncodingException e) {
+						
+					}
+				
+				if(date.length() == 0) {
+					//Well we really don't have a date then
+					//So let's just give it the current date string!
+					DateFormat df = new SimpleDateFormat("MM/dd/yyyy hh:mm:ss", Locale.US);
+					date = df.format(new Date());
+				}
+				else {
+					//Wee need to decipher the date
+					//It is in the (UTS) #35 date format pattern yyyyMMdd'T'HHmmSS.
+					Date datetime = new SimpleDateFormat("yyyyMMdd'T'HHmmSS", Locale.US).parse(date);
+				
+					DateFormat df = new SimpleDateFormat("EEEE, MMMM d yyyy, hh:mm a", Locale.US);
+					date = df.format(datetime);
+				}
+				
+				Log.d(TAG, "Formatted Date: " + date);
+				
+				//Create notification on glass!
+				/*NotificationCompat.Builder mBuilder =
+				        new NotificationCompat.Builder(overallContext)
+				        .setSmallIcon(R.drawable.icon)
+				        .setContentTitle(title)
+				        .setContentText(message + " - " + date);
+				NotificationManager mNotificationManager =
+					    (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+					// mId allows you to update the notification later on.
+				mNotificationManager.notify(foundNotif.realID, mBuilder.build());*/
+				
+				LiveCard mLiveCard = new LiveCard(this, "" + foundNotif.realID);
+
+	            RemoteViews mLiveRemote = new RemoteViews(getPackageName(), R.layout.notfication);
+	           
+	            mLiveRemote.setTextViewText(R.id.content, title + "\n" + message);
+	            mLiveRemote.setTextViewText(R.id.footer, date);
+	            
+	            mLiveCard.setViews(mLiveRemote);
+	            Intent menuIntent = new Intent(this, NotificationMenuActivity.class);
+	            menuIntent.putExtra("LiveCardId", "" + foundNotif.realID);
+	            menuIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+	            mLiveCard.setAction(PendingIntent.getActivity(this, 0, menuIntent, 0));
+	            mLiveCard.publish(PublishMode.REVEAL);
+	            
+	            AudioManager audio = (AudioManager) overallContext.getSystemService(Context.AUDIO_SERVICE);
+	            audio.playSoundEffect(Sounds.SELECTED);
+	            
+	            currentNotifications.put("" + foundNotif.realID, mLiveCard);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+    }
+    
+    private byte[] readBuffer(byte[] buffer, int offset, int length) {
+    	byte[] temp = new byte[length];
+    	
+    	int current = 0;
+    	for(int i = offset; i < offset + length; i++) {
+    		temp[current] = buffer[i];
+    		current++;
+    	}
+    	
+    	return temp;
+    }
+    
+    private static boolean isNotificationId(byte[] value, int id) {
+    	ByteBuffer temp = ByteBuffer.allocate(4);
+    	for(int i = 1; i <= 4; i++) {
+    		temp.put(value[i]);
+    	}
+    	
+    	temp.rewind();
+    	
+    	int possibleId = temp.getInt();
+    	
+    	return possibleId == id;
+    }
+    
+	@Override
+	public IBinder onBind(Intent intent) {
+		// TODO Auto-generated method stub
+		return null;
+	}
+
+	private final Runnable stopScan = new Runnable() {
+
+		@Override
+		public void run() {
+			// TODO Auto-generated method stub
+			mBluetoothAdapter.stopLeScan(mLeScan);
+		}
+		
+	};
+	
+	private final void startScan() {
+		if(mBluetoothAdapter != null) { 
+			Log.d(TAG, "Starting LE Scan...");
+			mBluetoothAdapter.startLeScan(mLeScan);
+    		mHandler.postDelayed(stopScan, 2500);
+		}
+	}
+	
+	private final CloseCardReceiver cardReceiver = new CloseCardReceiver();
+	
+	private final class CloseCardReceiver extends BroadcastReceiver {
+		@Override
+		public void onReceive(Context arg0, Intent arg1) {
+			// TODO Auto-generated method stub
+			String sId = arg1.getStringExtra("LiveCardId");
+			
+			if(currentNotifications.containsKey(sId)) {
+				LiveCard card = currentNotifications.get(sId);
+				
+				card.unpublish();
+				
+				currentNotifications.remove(sId);
+			}
+		}
+	}
+	
+	@Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        overallContext = this;
+        preferences = this.getSharedPreferences("com.vantagetechnic.isonotifications", 0);
+
+        IntentFilter filter = new IntentFilter();
+        
+        filter.addAction("COM.VANTAGETECHNIC.IOSNOTIFICATIONS.DELETECARD");
+        
+        this.registerReceiver(cardReceiver, filter);
+        
+        Editor edit = preferences.edit();
+        edit.putString("Status", "Finding Device...");
+        edit.commit();
+        
+        Log.d(TAG, "Starting Bluetooth services...");
+        
+        mBluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        mBluetoothAdapter = mBluetoothManager.getAdapter();
+        
+        if(mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
+        	startScan();
+        }
+        
+        return START_STICKY;
+	}
+	
+    @Override
+    public void onDestroy() {
+       
+    	this.unregisterReceiver(cardReceiver);
+    	
+    	if(mServer != null) {
+    		mServer.close();
+    	}
+    	
+    	if(mBluetoothGatt != null) {
+    		mBluetoothGatt.disconnect();
+    		mBluetoothGatt.close();
+    	}
+    	
+        super.onDestroy();
+    }
+}

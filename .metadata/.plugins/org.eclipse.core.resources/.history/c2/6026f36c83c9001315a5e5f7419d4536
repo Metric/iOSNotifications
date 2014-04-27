@@ -1,0 +1,8 @@
+<resources>
+
+    <string name="app_name">iOSNotifications</string>
+    <string name="close">Close</string>
+    <string name="delete">Delete</string>
+    <string name="pair">Pair</string>
+	<string name="glass_voice_trigger">receive notifications</string>
+</resources>

@@ -1,0 +1,59 @@
+package iOSNotifications;
+
+import android.content.Context;
+import android.graphics.Canvas;
+import android.util.Log;
+import android.view.SurfaceHolder;
+import android.view.View;
+
+import com.google.android.glass.timeline.DirectRenderingCallback;
+
+public class NotificationsDrawer implements DirectRenderingCallback  {
+	
+	private SurfaceHolder mHolder;
+	private LiveView mainView;
+	private final static String TAG = "iOSNotifications";
+	
+	public NotificationsDrawer(Context context) {
+		mainView = new LiveView(context);
+	}
+	
+	@Override
+	public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+		// TODO Auto-generated method stub
+		draw(mainView.getRootView());
+	}
+
+	@Override
+	public void surfaceCreated(SurfaceHolder holder) {
+		// TODO Auto-generated method stub
+		mHolder = holder;
+		draw(mainView.getRootView());
+	}
+
+	@Override
+	public void surfaceDestroyed(SurfaceHolder holder) {
+		// TODO Auto-generated method stub
+		mHolder = null;
+	}
+
+	@Override
+	public void renderingPaused(SurfaceHolder arg0, boolean arg1) {
+		// TODO Auto-generated method stub
+		
+	}
+
+	private void draw(View view) {
+        Canvas canvas;
+        try {
+            canvas = mHolder.lockCanvas();
+        } catch (Exception e) {
+            Log.e(TAG, "Unable to lock canvas: " + e);
+            return;
+        }
+        if (canvas != null) {
+            view.draw(canvas);
+            mHolder.unlockCanvasAndPost(canvas);
+        }
+    }
+}
