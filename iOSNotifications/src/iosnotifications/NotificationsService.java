@@ -1,6 +1,7 @@
 package iosnotifications;
 
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -105,14 +106,17 @@ public class NotificationsService extends Service {
     
     private SharedPreferences preferences;
     
+    private BluetoothDevice foundDevice;
+    
     /*private final BluetoothGattServerCallback mServerCallback = new BluetoothGattServerCallback() {
     	@Override
     	public void onConnectionStateChange(BluetoothDevice device, int status, int newState) {
-    		if(newState == BluetoothGatt.STATE_CONNECTED) {
-    			device.connectGatt(overallContext, true, mGattCallback);
+    		if(newState == BluetoothGattServer.STATE_CONNECTED) {
+    			Log.d(TAG, "Bluetooth Gatt Server connected to device: " + status + ", " + newState);
+    			mBluetoothGatt = device.connectGatt(overallContext, true, mGattCallback);
     		}
     		else {
-    		
+    			Log.d("TAG", "Bluetooth Gatt server failed to connect: " + status + ", " + newState);
     		}
     	}
     };*/
@@ -122,20 +126,45 @@ public class NotificationsService extends Service {
 		public void onLeScan(BluetoothDevice device, int rssi,
 				byte[] scanRecord) {
 			// TODO Auto-generated method stub
-			
+			final BluetoothDevice d = device;
 			if(device != null) {
-				if(invalidDevices.contains(device) == false) {
-					Log.d(TAG, "Found LE Device");
-						//device.setPairingConfirmation(false);
-						//device.createBond();
-			        
-					mBluetoothGatt = device.connectGatt(overallContext, false, mGattCallback);
-					mBluetoothGatt.connect();
-					mBluetoothAdapter.stopLeScan(mLeScan);
+				if(invalidDevices.contains(d) == false) {
+					mHandler.post(new Runnable() {
+						@Override
+						public void run() {
+							Log.d(TAG, "Found LE Device");
+							mBluetoothGatt = d.connectGatt(overallContext, false, mGattCallback);
+							//mBluetoothGatt.disconnect();
+							
+							d.setPairingConfirmation(false);
+							d.createBond();
+							
+							mBluetoothGatt.connect();
+							
+							//refreshDeviceCache(mBluetoothGatt);
+						}
+					});
+					
+					stopScan.run();
 				}
 			}
 		}
 	};
+	
+	private boolean refreshDeviceCache(BluetoothGatt gatt){
+	    try {
+	        BluetoothGatt localBluetoothGatt = gatt;
+	        Method localMethod = localBluetoothGatt.getClass().getMethod("refresh", new Class[0]);
+	        if (localMethod != null) {
+	           boolean bool = ((Boolean) localMethod.invoke(localBluetoothGatt, new Object[0])).booleanValue();
+	            return bool;
+	         }
+	    } 
+	    catch (Exception localException) {
+	        Log.e(TAG, "An exception occured while refreshing device");
+	    }
+	    return false;
+	}
     
     private final  BluetoothGattCallback mGattCallback =
             new BluetoothGattCallback() {
@@ -143,14 +172,15 @@ public class NotificationsService extends Service {
         public void onConnectionStateChange(BluetoothGatt gatt, int status,
                 int newState) {
         	
+        	final BluetoothGatt gt = gatt;
+        	
         	Log.d(TAG, "Connection Changed: Status: " + status + " State: " + newState);
         	
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 mConnectionState = STATE_CONNECTED;
-                Log.d(TAG, "Connected to GATT server.");
-                Log.d(TAG, "Attempting to start service discovery:" +
-                        gatt.discoverServices());
-                
+                		 Log.d(TAG, "Connected to GATT server.");
+                         Log.d(TAG, "Attempting to start service discovery:" +
+                                 gt.discoverServices());
                 Editor edit = preferences.edit();
                 edit.putString("Status", "Connected");
                 edit.commit();
@@ -177,7 +207,7 @@ public class NotificationsService extends Service {
             	Log.d(TAG, "Gatt connected!");
                try {
 	            	if(gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0")) != null) {
-						Log.d(TAG, "Is iPhone Service!"); 
+						Log.d(TAG, "Is iPhone Service!");
 	            		notifs.clear();
 						 
 						 final BluetoothGatt gatt2 = gatt;
@@ -211,7 +241,7 @@ public class NotificationsService extends Service {
 			            		   }
 							}
 	            			   
-	            		   }, 3000);
+	            		   }, 5000);
 	            		   
 	            		  
 	            	   }
@@ -220,7 +250,7 @@ public class NotificationsService extends Service {
 	            	   Log.d(TAG, "Is not an iPhone Service, Disconnecting...");
 	            	   invalidDevices.add(gatt.getDevice());
 	            	   gatt.disconnect();
-	            	   startScan();
+	            	   //startScan();
 	               }
                } catch (Exception e) {
             	   e.printStackTrace();
@@ -271,6 +301,8 @@ public class NotificationsService extends Service {
 	        			byte eventId = value[0];
 	        			byte categoryId = value[2];
 	        			
+	        			Log.d(TAG, "Category ID: " + categoryId);
+	        			
 	        			byte[] notifId = new byte[value.length - 4];
 	        			
 	        			//Copy the notification ID!
@@ -282,44 +314,46 @@ public class NotificationsService extends Service {
 	        			
 	        			//We have a new notification!
 	        			if(eventId == EventIDNotificationAdded) {
-	        				Log.d(TAG, "A notification was added!");
-		        			
-		        			iNotification notif = new iNotification();
-		        			notif.categoryId = categoryId;
-		        			notif.notificationId = notifId;
-		        			notif.realID = ByteBuffer.wrap(notifId).getInt();
-		        			notifs.add(notif);
-		        			
-		        			Log.d(TAG, "Notification ID: " + notif.realID);
-		        			
-		        			BluetoothGattService service = gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));   
-		        			//So, lets get the content of the notification and then post it to timeline!
-		        			BluetoothGattCharacteristic controlChar = service.getCharacteristic(UUID.fromString("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9"));
-	        			
-		        			if(controlChar != null) {
-			        			//Build request
-			        	
-		        				receivedBytes = new ArrayList<byte[]>();
-		        				
-			        			ByteBuffer request = ByteBuffer.allocate(8 + notifId.length);
-			        			request.put((byte) 0);
-			        			request.put(notifId);
-			        			request.put(NotificationAttributeIDTitle);
-			        			request.put((byte) 255);
-			        			request.put((byte) 0);
-			        			request.put(NotificationAttributeIDMessage);
-			        			request.put((byte) 255);
-			        			request.put((byte) 0);
-			        			request.put(NotificationAttributeIDDate);
+	        				if(categoryId != CategoryIDIncomingCall && categoryId != CategoryIDMissedCall && categoryId != CategoryIDVoicemail && categoryId != CategoryIDSocial) {
+		        				Log.d(TAG, "A notification was added!");
 			        			
-			        			controlChar.setValue(request.array());
+			        			iNotification notif = new iNotification();
+			        			notif.categoryId = categoryId;
+			        			notif.notificationId = notifId;
+			        			notif.realID = ByteBuffer.wrap(notifId).getInt();
+			        			notifs.add(notif);
 			        			
-			        			if(mConnectionState == STATE_CONNECTED) {
-			        				if(gatt.writeCharacteristic(controlChar)) {
-			        					Log.d(TAG, "Gatt wrote successfully!");
-			        				}
+			        			Log.d(TAG, "Notification ID: " + notif.realID);
+			        			
+			        			BluetoothGattService service = gatt.getService(UUID.fromString("7905F431-B5CE-4E99-A40F-4B1E122D00D0"));   
+			        			//So, lets get the content of the notification and then post it to timeline!
+			        			BluetoothGattCharacteristic controlChar = service.getCharacteristic(UUID.fromString("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9"));
+		        			
+			        			if(controlChar != null) {
+				        			//Build request
+				        	
+			        				receivedBytes = new ArrayList<byte[]>();
+			        				
+				        			ByteBuffer request = ByteBuffer.allocate(8 + notifId.length);
+				        			request.put((byte) 0);
+				        			request.put(notifId);
+				        			request.put(NotificationAttributeIDTitle);
+				        			request.put((byte) 255);
+				        			request.put((byte) 0);
+				        			request.put(NotificationAttributeIDMessage);
+				        			request.put((byte) 255);
+				        			request.put((byte) 0);
+				        			request.put(NotificationAttributeIDDate);
+				        			
+				        			controlChar.setValue(request.array());
+				        			
+				        			if(mConnectionState == STATE_CONNECTED) {
+				        				if(gatt.writeCharacteristic(controlChar)) {
+				        					Log.d(TAG, "Gatt wrote successfully!");
+				        				}
+				        			}
 			        			}
-		        			}
+	        				}
 	        			}
 	        			else if(eventId == EventIDNotificationRemoved) {
 	        				int realId = ByteBuffer.wrap(notifId).getInt();
@@ -647,7 +681,7 @@ public class NotificationsService extends Service {
         IntentFilter filter = new IntentFilter();
         
         filter.addAction("COM.VANTAGETECHNIC.IOSNOTIFICATIONS.DELETECARD");
-  
+        
         this.registerReceiver(cardReceiver, filter);
         
         Editor edit = preferences.edit();
@@ -660,7 +694,7 @@ public class NotificationsService extends Service {
         mBluetoothAdapter = mBluetoothManager.getAdapter();
         
         if(mBluetoothAdapter.getState() == BluetoothAdapter.STATE_ON) {
-        	startScan();
+        	startScan();    	
         }
         
         return START_STICKY;

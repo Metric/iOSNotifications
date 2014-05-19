@@ -1,7 +1,0 @@
-package iosnotifications;
-
-public class Notification {
-	public byte[] notificationId;
-	public byte categoryId;
-	public int realID;
-}
